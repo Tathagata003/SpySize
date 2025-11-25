@@ -4,7 +4,13 @@ import os
 import tkinter as tk
 from tkinter import filedialog, messagebox
 import customtkinter as ctk
-import helper as main  # imports find_largest_directories, find_largest_files, format_size
+import utils.finder as finder # imports find_largest_directories, find_largest_files, format_size
+from utils.spinner import Spinner
+
+# Global spinner instance
+spinner = None
+# Global cancellation event (set when user requests stop)
+scan_cancel_event = None
 
 def browse_path():
     d = filedialog.askdirectory()
@@ -13,9 +19,10 @@ def browse_path():
 
 def run_scan_background():
     # Prepare UI state and cancellation event
-    global scan_cancel_event
+    global scan_cancel_event, spinner
     scan_cancel_event = threading.Event()
     set_ui_enabled(False)
+    spinner.start()
     try:
         text_output.delete("1.0", tk.END)
     except Exception:
@@ -46,6 +53,7 @@ def run_scan_background():
     except Exception as e:
         messagebox.showerror("Error", str(e))
         set_ui_enabled(True)
+        spinner.stop()
 
 def append_text(text: str):
     """Insert text into the GUI text widget (must be called from main thread via root.after)."""
@@ -55,10 +63,6 @@ def append_text(text: str):
     except Exception:
         # if widget isn't ready or has been destroyed, ignore
         pass
-
-
-# Global cancellation event (set when user requests stop)
-scan_cancel_event = None
 
 
 def set_ui_enabled(enabled: bool):
@@ -91,6 +95,7 @@ def stop_scan():
 
 
 def worker(path, folders_num, files_num):
+    global scan_cancel_event, spinner
     start_total = time.perf_counter()
 
     # Folders
@@ -99,6 +104,8 @@ def worker(path, folders_num, files_num):
         entries = os.listdir(path)
     except OSError as e:
         root.after(0, append_text, f"Error accessing path: {e}\n")
+        root.after(0, set_ui_enabled, True)
+        root.after(0, spinner.stop)
         return
 
     immediate_subdirs = [os.path.join(path, item) for item in entries
@@ -110,6 +117,7 @@ def worker(path, folders_num, files_num):
     if scan_cancel_event is not None and scan_cancel_event.is_set():
         root.after(0, append_text, "Scan cancelled before starting folder scan.\n")
         root.after(0, set_ui_enabled, True)
+        root.after(0, spinner.stop)
         return
 
     if available_subdirs_count == 0 or folders_to_request == 0:
@@ -118,19 +126,20 @@ def worker(path, folders_num, files_num):
     else:
         root.after(0, append_text, f"Working: scanning {available_subdirs_count} subdirectories (returning top {folders_to_request})...\n")
         t0 = time.perf_counter()
-        largest_dirs = main.find_largest_directories(path, num_largest=folders_to_request, cancel_event=scan_cancel_event)
+        largest_dirs = finder.find_largest_directories(path, num_largest=folders_to_request, cancel_event=scan_cancel_event)
         t1 = time.perf_counter()
         root.after(0, append_text, f"Finished scanning folders in {t1 - t0:.2f}s.\n")
         # Check cancellation after folder scan
         if scan_cancel_event is not None and scan_cancel_event.is_set():
             root.after(0, append_text, "Scan cancelled after folder scan.\n")
             root.after(0, set_ui_enabled, True)
+            root.after(0, spinner.stop)
             return
 
     if largest_dirs:
         root.after(0, append_text, f"\nTop {len(largest_dirs)} largest subdirectories in '{path}':\n")
         for dir_path, size in largest_dirs:
-            root.after(0, append_text, f"- {dir_path}: {main.format_size(size)}\n")
+            root.after(0, append_text, f"- {dir_path}: {finder.format_size(size)}\n")
     else:
         root.after(0, append_text, "\nNo subdirectories found or an error occurred.\n")
 
@@ -139,16 +148,16 @@ def worker(path, folders_num, files_num):
         root.after(0, append_text, "\nSkipping file scan (requested 0).\n")
         largest_files = []
     else:
-        root.after(0, append_text, f"Working: scanning files recursively (returning top {files_num})...\n")
+        root.after(0, append_text, f"\nWorking: scanning files recursively (returning top {files_num})...\n")
         t0 = time.perf_counter()
-        largest_files = main.find_largest_files(path, num_files=files_num, cancel_event=scan_cancel_event)
+        largest_files = finder.find_largest_files(path, num_files=files_num, cancel_event=scan_cancel_event)
         t1 = time.perf_counter()
         root.after(0, append_text, f"Finished scanning files in {t1 - t0:.2f}s.\n")
 
     if largest_files:
         root.after(0, append_text, f"\nTop {len(largest_files)} largest files in '{path}':\n")
         for file_path, size in largest_files:
-            root.after(0, append_text, f"- {file_path}: {main.format_size(size)}\n")
+            root.after(0, append_text, f"- {file_path}: {finder.format_size(size)}\n")
     else:
         root.after(0, append_text, "\nNo files found or an error occurred.\n")
 
@@ -157,6 +166,7 @@ def worker(path, folders_num, files_num):
     root.after(0, append_text, f"\nTotal elapsed time: {end_total - start_total:.2f}s\n")
     # Re-enable UI
     root.after(0, set_ui_enabled, True)
+    root.after(0, spinner.stop)
 
 def finish(lines, start_total):
     end_total = time.perf_counter()
@@ -205,6 +215,12 @@ btn_start.grid(row=3, column=1, pady=(10,0))
 btn_stop = ctk.CTkButton(frm, text="Stop scan", fg_color="#d9534f", hover_color="#c9302c", command=stop_scan)
 btn_stop.grid(row=3, column=2, pady=(10,0))
 btn_stop.configure(state="disabled")
+
+# spinner location
+spinner_label = ctk.CTkLabel(frm, text="", width=20, font=("Arial", 24))
+spinner_label.grid(row=3, column=0, padx=(6, 0), pady=(10,0), sticky="w")
+
+spinner = Spinner(spinner_label, root)
 
 # CTk has CTkTextbox in recent versions; fall back to tk.Text if not available
 CTkTextbox = getattr(ctk, "CTkTextbox", None)
