@@ -84,6 +84,8 @@ def stop_scan():
         root.after(0, append_text, "\nCancellation requested — stopping soon...\n")
     try:
         btn_stop.configure(state="disabled")
+        btn_browse.configure(state="normal")
+        btn_start.configure(state="normal")
     except Exception:
         pass
 
@@ -116,7 +118,7 @@ def worker(path, folders_num, files_num):
     else:
         root.after(0, append_text, f"Working: scanning {available_subdirs_count} subdirectories (returning top {folders_to_request})...\n")
         t0 = time.perf_counter()
-        largest_dirs = main.find_largest_directories(path, num_largest=folders_to_request)
+        largest_dirs = main.find_largest_directories(path, num_largest=folders_to_request, cancel_event=scan_cancel_event)
         t1 = time.perf_counter()
         root.after(0, append_text, f"Finished scanning folders in {t1 - t0:.2f}s.\n")
         # Check cancellation after folder scan
@@ -137,9 +139,9 @@ def worker(path, folders_num, files_num):
         root.after(0, append_text, "\nSkipping file scan (requested 0).\n")
         largest_files = []
     else:
-        root.after(0, append_text, f"\nWorking: scanning files recursively (returning top {files_num})...\n")
+        root.after(0, append_text, f"Working: scanning files recursively (returning top {files_num})...\n")
         t0 = time.perf_counter()
-        largest_files = main.find_largest_files(path, num_files=files_num)
+        largest_files = main.find_largest_files(path, num_files=files_num, cancel_event=scan_cancel_event)
         t1 = time.perf_counter()
         root.after(0, append_text, f"Finished scanning files in {t1 - t0:.2f}s.\n")
 

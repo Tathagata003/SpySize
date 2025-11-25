@@ -5,11 +5,17 @@ import concurrent.futures
 import heapq
 import time
 
-def get_directory_size(path):
+def get_directory_size(path, cancel_event=None):
     """Calculates the total size of a directory in bytes."""
     total_size = 0
     for dirpath, dirnames, filenames in os.walk(path, onerror=lambda e: None, followlinks=False):
+        if cancel_event is not None and cancel_event.is_set():
+            break
+        
         for f in filenames:
+            if cancel_event is not None and cancel_event.is_set():
+                break
+
             fp = os.path.join(dirpath, f)
             # Skip symbolic links
             if os.path.islink(fp):
@@ -22,7 +28,7 @@ def get_directory_size(path):
                 pass
     return total_size
 
-def find_largest_directories(root_dir, num_largest=10, max_workers=None):
+def find_largest_directories(root_dir, num_largest=10, max_workers=None, cancel_event=None):
     """
     Finds the largest subdirectories within a given root directory using multithreading.
 
@@ -30,6 +36,7 @@ def find_largest_directories(root_dir, num_largest=10, max_workers=None):
         root_dir (str): The path to the root directory to scan.
         num_largest (int): The number of largest directories to return.
         max_workers (int|None): Number of worker threads for parallel scanning (None => automatic).
+        cancel_event (threading.Event|None): If set, stops processing futures early.
 
     Returns:
         list: A list of tuples (directory_path, size_in_bytes) of the largest directories.
@@ -60,27 +67,39 @@ def find_largest_directories(root_dir, num_largest=10, max_workers=None):
 
         # Compute sizes in parallel
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as exc:
-            future_to_path = {exc.submit(get_directory_size, p): p for p in subdirs}
-            for fut in concurrent.futures.as_completed(future_to_path):
-                p = future_to_path[fut]
-                try:
-                    dir_sizes[p] = fut.result()
-                except Exception:
-                    # On error, record size 0 (or skip) — keep robust behavior
-                    dir_sizes[p] = 0
-
-    # Sort directories by size in descending order
+            future_to_path = {exc.submit(get_directory_size, p, cancel_event): p for p in subdirs}
+            
+            
+            while future_to_path:
+            # Wait with a 1-second timeout so we check cancellation frequently
+                done, pending = concurrent.futures.wait(future_to_path.keys(), timeout=1.0)
+                
+                # Check cancellation
+                if cancel_event is not None and cancel_event.is_set():
+                    for f in pending:
+                        f.cancel()
+                    break
+                
+                # Process completed futures
+                for fut in done:
+                    p = future_to_path[fut]
+                    try:
+                        dir_sizes[p] = fut.result()
+                    except Exception:
+                        dir_sizes[p] = 0
+                    del future_to_path[fut]
+    
     sorted_dirs = sorted(dir_sizes.items(), key=lambda item: item[1], reverse=True)
-
     return sorted_dirs[:num_largest]
 
-def find_largest_files(root_dir, num_files=10):
+def find_largest_files(root_dir, num_files=10, cancel_event=None):
     """
     Finds the largest files under root_dir (recursive).
 
     Args:
         root_dir (str): Path to scan.
         num_files (int): Number of largest files to return.
+        cancel_event (threading.Event|None): If set, stops scanning early.
 
     Returns:
         list: A list of tuples (file_path, size_in_bytes) of the largest files.
@@ -90,6 +109,9 @@ def find_largest_files(root_dir, num_files=10):
 
     files = []
     for dirpath, dirnames, filenames in os.walk(root_dir, onerror=lambda e: None, followlinks=False):
+        if cancel_event is not None and cancel_event.is_set():
+            break
+        
         for f in filenames:
             fp = os.path.join(dirpath, f)
             if os.path.islink(fp):
